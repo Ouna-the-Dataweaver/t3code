@@ -1248,15 +1248,16 @@ const make = Effect.gen(function* () {
         input.replaysAcceptedCommand !== true
           ? yield* loadDelegationFavorites
           : null;
+      const firstFavorite = (candidate: ServerProvider) => {
+        const slugs = favorites?.get(candidate.instanceId);
+        return candidate.models.find((model) => slugs?.has(model.slug))?.slug;
+      };
       // An explicit model still resolves against the full catalog; favorites only
       // replace the guess made when the agent names no model.
-      const defaultModel = (candidate: ServerProvider) =>
-        candidate.instanceId === inheritedSelection.instanceId
-          ? inheritedSelection.model
-          : favorites === null
-            ? candidate.models[0]?.slug
-            : candidate.models.find((model) => favorites.get(candidate.instanceId)?.has(model.slug))
-                ?.slug;
+      const defaultModel = (candidate: ServerProvider) => {
+        if (candidate.instanceId === inheritedSelection.instanceId) return inheritedSelection.model;
+        return favorites === null ? candidate.models[0]?.slug : firstFavorite(candidate);
+      };
       let instanceId = requestedInstanceId;
 
       if (instanceId === undefined && requestedDriver !== undefined) {
