@@ -1077,6 +1077,196 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
+  const favoritesCatalog = (settings: Parameters<typeof ServerSettings.layerTest>[0]) =>
+    Effect.gen(function* () {
+      const codex = providerSnapshot({
+        instanceId: codexInstanceId,
+        driver: ProviderDriverKind.make("codex"),
+        model: "gpt-5.4",
+      });
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: () => Effect.succeed(parentProjection([])),
+        }),
+        ServerSettings.layerTest(settings),
+        providerRegistryLayer([
+          {
+            ...codex,
+            models: [
+              ...codex.models,
+              { slug: "gpt-5.4-mini", name: "Mini", isCustom: false, capabilities: null },
+              { slug: "my-model", name: "Mine", isCustom: true, capabilities: null },
+            ],
+          },
+          providerSnapshot({
+            instanceId: antigravityInstanceId,
+            driver: ProviderDriverKind.make("antigravity"),
+            model: "ant-model",
+          }),
+        ]),
+        adapterRegistryLayer([codexInstanceId, antigravityInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      return yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const capabilities = yield* service.capabilities(scope);
+        return capabilities.providers.map((provider) => [
+          provider.providerInstanceId,
+          provider.models.map((model) => model.id),
+        ]);
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+    });
+
+  it.effect("lists only favorite models and drops providers without favorites", () =>
+    Effect.gen(function* () {
+      const catalog = yield* favoritesCatalog({
+        delegationFavoritesOnly: true,
+        favorites: [{ provider: codexInstanceId, model: "gpt-5.4-mini" }],
+        providerModelPreferences: {
+          [codexInstanceId]: { hiddenModels: ["gpt-5.4-mini"], modelOrder: [] },
+        },
+      });
+      assert.deepEqual(catalog, [[codexInstanceId, ["gpt-5.4-mini"]]]);
+    }),
+  );
+
+  it.effect("lists the full catalog while favorites are unmigrated", () =>
+    Effect.gen(function* () {
+      const catalog = yield* favoritesCatalog({ delegationFavoritesOnly: true, favorites: null });
+      assert.deepEqual(catalog, [
+        [codexInstanceId, ["gpt-5.4", "gpt-5.4-mini", "my-model"]],
+        [antigravityInstanceId, ["ant-model"]],
+      ]);
+    }),
+  );
+
+  const delegateToAntigravityWithoutModel = (
+    settings: Parameters<typeof ServerSettings.layerTest>[0],
+  ) =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        runId: parentRunId,
+        parentNodeId,
+        origin: "app_owned",
+        createdBy: "agent",
+        driver: ProviderDriverKind.make("antigravity"),
+        providerInstanceId: antigravityInstanceId,
+        providerThreadId: null,
+        childThreadId,
+        nativeTaskRef: null,
+        prompt: "Summarize the diff.",
+        title: null,
+        model: "ant-fav",
+        status: "running",
+        result: null,
+        startedAt: null,
+        completedAt: null,
+      };
+      let delegated = false;
+      const antigravity = providerSnapshot({
+        instanceId: antigravityInstanceId,
+        driver: ProviderDriverKind.make("antigravity"),
+        model: "ant-model",
+      });
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          assertProviderInstanceEnabled: () => Effect.void,
+          isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+          getThreadRecords: (threadId) =>
+            Effect.succeed(
+              threadId === parentThreadId
+                ? parentProjection(delegated ? [task] : [])
+                : childProjection,
+            ),
+          dispatch: (command) =>
+            Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  delegated = true;
+                }),
+              ),
+              Effect.as({
+                sequence: 1,
+                storedEvents: [
+                  {
+                    sequence: 1,
+                    commandId: null,
+                    event: { type: "subagent.updated", payload: task },
+                  },
+                ],
+              } as never),
+            ),
+        }),
+        ServerSettings.layerTest(settings),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed([
+            providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: "gpt-5.4",
+            }),
+            {
+              ...antigravity,
+              models: [
+                ...antigravity.models,
+                { slug: "ant-fav", name: "Favorite", isCustom: false, capabilities: null },
+              ],
+            },
+          ]),
+        }),
+        adapterRegistryLayer([codexInstanceId, antigravityInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      return yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const outcome = yield* service
+          .delegateTask(scope, {
+            task: "Summarize the diff.",
+            target: { providerInstanceId: antigravityInstanceId },
+            mode: "async",
+            clientRequestId: "delegate-without-model-1",
+          })
+          .pipe(Effect.result);
+        const commands = yield* Ref.get(dispatched);
+        return {
+          failureCode: outcome._tag === "Failure" ? outcome.failure.code : null,
+          models: commands.map(
+            (command) => (command as { modelSelection: { model: string } }).modelSelection.model,
+          ),
+        };
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+    });
+
+  it.effect("delegates without a model to the target provider's first favorite", () =>
+    Effect.gen(function* () {
+      const outcome = yield* delegateToAntigravityWithoutModel({
+        delegationFavoritesOnly: true,
+        favorites: [{ provider: antigravityInstanceId, model: "ant-fav" }],
+      });
+      assert.deepEqual(outcome, { failureCode: null, models: ["ant-fav"] });
+    }),
+  );
+
+  it.effect("refuses to guess a model for a provider without favorites", () =>
+    Effect.gen(function* () {
+      const outcome = yield* delegateToAntigravityWithoutModel({
+        delegationFavoritesOnly: true,
+        favorites: [{ provider: codexInstanceId, model: "gpt-5.4" }],
+      });
+      assert.deepEqual(outcome, { failureCode: "model_unavailable", models: [] });
+    }),
+  );
+
   it.effect.each([
     {
       name: "installation",

@@ -441,6 +441,20 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       onValueChange={(value) => write({ enableAgentBrowserAccess: value })}
                     />
                   </SettingsSection>
+                  <SettingsSection title="Delegation">
+                    <SettingsSwitchRow
+                      icon="star.fill"
+                      label="Favorite models only"
+                      subtitle={
+                        projectSelected
+                          ? "Environment-wide setting. Select All projects to change it."
+                          : "Agents choosing a model for subagents or new threads only see your favorite models."
+                      }
+                      value={uniform("delegationFavoritesOnly")}
+                      disabled={disabledFor("delegationFavoritesOnly")}
+                      onValueChange={(value) => write({ delegationFavoritesOnly: value })}
+                    />
+                  </SettingsSection>
                 </>
               ) : null}
 

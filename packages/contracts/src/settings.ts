@@ -1044,6 +1044,8 @@ export const ServerSettings = Schema.Struct({
   providerModelPreferences: Schema.NullOr(ProviderModelPreferences).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** Agents choosing a model through T3 delegation see only favorited models. */
+  delegationFavoritesOnly: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(StorageCleanupSettings)({}))),
@@ -1340,6 +1342,7 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   favorites: Schema.optionalKey(ModelFavorites),
   providerModelPreferences: Schema.optionalKey(ProviderModelPreferences),
+  delegationFavoritesOnly: Schema.optionalKey(Schema.Boolean),
   // Applied under the settings service's write lock, only while still unset.
   migrateModelPreferences: Schema.optionalKey(
     Schema.Struct({

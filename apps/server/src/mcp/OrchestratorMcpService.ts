@@ -58,6 +58,7 @@ import {
   type ScheduledTask,
   type ScheduledTaskUpsertInput,
   type ServerProvider,
+  type ServerSettings as ServerSettingsValue,
   ThreadId,
 } from "@t3tools/contracts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -307,6 +308,23 @@ function providerConstraints(
     constraints.push("Provider is not authenticated.");
   }
   return constraints;
+}
+
+/**
+ * Null leaves the catalog unfiltered: the toggle is off, or no client has
+ * migrated its favorites to the server yet.
+ */
+function delegationFavoriteSlugs(
+  settings: Pick<ServerSettingsValue, "delegationFavoritesOnly" | "favorites">,
+): ReadonlyMap<ProviderInstanceId, ReadonlySet<string>> | null {
+  if (!settings.delegationFavoritesOnly || settings.favorites === null) return null;
+  const slugs = new Map<ProviderInstanceId, Set<string>>();
+  for (const favorite of settings.favorites) {
+    const forProvider = slugs.get(favorite.provider) ?? new Set<string>();
+    forProvider.add(favorite.model);
+    slugs.set(favorite.provider, forProvider);
+  }
+  return slugs;
 }
 
 /**
@@ -1155,6 +1173,11 @@ const make = Effect.gen(function* () {
 
   const loadProviders = providerRegistry.getProviders;
 
+  const readSettings = serverSettings.getSettings.pipe(
+    Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
+  );
+  const loadDelegationFavorites = readSettings.pipe(Effect.map(delegationFavoriteSlugs));
+
   const loadOrchestrationCapableInstanceIds = () =>
     providerAdapters.list().pipe(Effect.map((instanceIds) => new Set(instanceIds)));
 
@@ -1285,15 +1308,26 @@ const make = Effect.gen(function* () {
 
       const inheritedSelection = input.parent.thread.modelSelection;
       const requestedModel = input.target?.model;
+      const favorites =
+        requestedModel === undefined && instanceId !== inheritedSelection.instanceId
+          ? yield* loadDelegationFavorites
+          : null;
+      const providerFavorites = favorites?.get(instanceId);
+      // An explicit model still resolves against the full catalog; favorites only
+      // replace the guess made when the agent names no model.
       const model =
         requestedModel ??
         (instanceId === inheritedSelection.instanceId
           ? inheritedSelection.model
-          : provider?.models[0]?.slug);
+          : favorites === null
+            ? provider.models[0]?.slug
+            : provider.models.find((candidate) => providerFavorites?.has(candidate.slug))?.slug);
       if (model === undefined) {
         return yield* failure(
           "model_unavailable",
-          `Provider ${instanceId} has no model available for inheritance.`,
+          favorites === null
+            ? `Provider ${instanceId} has no model available for inheritance.`
+            : `Provider ${instanceId} has no favorite models. Name a model in target.model.`,
         );
       }
       if (
@@ -1909,17 +1943,28 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
         const providers = yield* loadProviders;
         const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
-        const modelPreferences = yield* serverSettings.getSettings.pipe(
-          Effect.map((settings) => settings.providerModelPreferences ?? {}),
-          Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
-        );
+        const settings = yield* readSettings;
+        const modelPreferences = settings.providerModelPreferences ?? {};
+        const favorites = delegationFavoriteSlugs(settings);
+        const listedModels = (provider: ServerProvider) => {
+          const providerFavorites = favorites?.get(provider.instanceId);
+          return provider.models.filter((model) =>
+            favorites !== null
+              ? providerFavorites?.has(model.slug) === true
+              : model.isCustom ||
+                !modelPreferences[provider.instanceId]?.hiddenModels.includes(model.slug),
+          );
+        };
         return {
           parentThreadId: parent?.thread.id ?? null,
           inheritedProviderInstanceId: parent?.thread.modelSelection.instanceId ?? null,
           inheritedModel: parent?.thread.modelSelection.model ?? null,
           runtimeMode: limits.runtimeMode,
           interactionMode: limits.interactionMode,
-          providers: providers.map((provider) => {
+          // A provider with no favorites is one the user does not want agents choosing.
+          providers: providers.flatMap((provider) => {
+            const models = listedModels(provider);
+            if (favorites !== null && models.length === 0) return [];
             const constraints = providerConstraints(
               provider,
               orchestrationCapableInstanceIds.has(provider.instanceId),
@@ -1927,21 +1972,14 @@ const make = Effect.gen(function* () {
             return {
               providerInstanceId: provider.instanceId,
               driverKind: provider.driver,
-              displayName: provider?.displayName ?? null,
-              models:
-                provider?.models
-                  .filter(
-                    (model) =>
-                      model.isCustom ||
-                      !modelPreferences[provider.instanceId]?.hiddenModels.includes(model.slug),
-                  )
-                  .map((model) => ({
-                    id: model.slug,
-                    label: model.name ?? null,
-                    ...(model.capabilities?.optionDescriptors === undefined
-                      ? {}
-                      : { options: model.capabilities.optionDescriptors }),
-                  })) ?? [],
+              displayName: provider.displayName ?? null,
+              models: models.map((model) => ({
+                id: model.slug,
+                label: model.name ?? null,
+                ...(model.capabilities?.optionDescriptors === undefined
+                  ? {}
+                  : { options: model.capabilities.optionDescriptors }),
+              })),
               ...(provider.supportedRuntimeModes === undefined ||
               provider.supportedRuntimeModes.length === 0
                 ? {}
