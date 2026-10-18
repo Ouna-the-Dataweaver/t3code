@@ -1150,6 +1150,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     readonly settings: Parameters<typeof ServerSettings.layerTest>[0];
     readonly target?: OrchestratorMcpTarget;
     readonly hasReceipt?: boolean;
+    readonly antigravityModels?: ServerProvider["models"];
   }) =>
     Effect.gen(function* () {
       const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
@@ -1220,7 +1221,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             }),
             {
               ...antigravity,
-              models: [
+              models: input.antigravityModels ?? [
                 ...antigravity.models,
                 { slug: "ant-fav", name: "Favorite", isCustom: false, capabilities: null },
               ],
@@ -1294,6 +1295,51 @@ describe("OrchestratorMcpService provider resolution", () => {
       assert.deepEqual(outcome, {
         failureCode: null,
         selections: [{ instanceId: antigravityInstanceId, model: "ant-model" }],
+      });
+    }),
+  );
+
+  it.effect("replays an accepted delegation whose options only fit the favorite it chose", () =>
+    Effect.gen(function* () {
+      const effort = (values: ReadonlyArray<string>) => ({
+        optionDescriptors: [
+          {
+            id: "reasoningEffort",
+            label: "Reasoning",
+            type: "select" as const,
+            options: values.map((value) => ({ id: value, label: value })),
+          },
+        ],
+      });
+      const outcome = yield* delegateToAntigravityWithoutModel({
+        settings: {
+          delegationFavoritesOnly: true,
+          favorites: [{ provider: antigravityInstanceId, model: "ant-fav" }],
+        },
+        target: {
+          providerInstanceId: antigravityInstanceId,
+          options: [{ id: "reasoningEffort", value: "xhigh" }],
+        },
+        hasReceipt: true,
+        antigravityModels: [
+          { slug: "ant-model", name: "First", isCustom: false, capabilities: effort(["low"]) },
+          { slug: "ant-fav", name: "Favorite", isCustom: false, capabilities: effort(["xhigh"]) },
+        ],
+      });
+      assert.equal(outcome.failureCode, null);
+    }),
+  );
+
+  it.effect("keeps driver-only instance order for an explicit model", () =>
+    Effect.gen(function* () {
+      const outcome = yield* delegateToAntigravityWithoutModel({
+        settings: { delegationFavoritesOnly: true, favorites: [] },
+        target: { driverKind: ProviderDriverKind.make("antigravity"), model: "custom" },
+        antigravityModels: [],
+      });
+      assert.deepEqual(outcome, {
+        failureCode: null,
+        selections: [{ instanceId: antigravityInstanceId, model: "custom" }],
       });
     }),
   );

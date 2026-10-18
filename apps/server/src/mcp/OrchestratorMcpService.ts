@@ -1225,11 +1225,12 @@ const make = Effect.gen(function* () {
     /**
      * Set only when the command that will dispatch this target already has a receipt: that
      * dispatch can only replay the recorded result, never start anything new, so filtering
-     * candidates by the project's current settings or the user's current favorites would just
-     * refuse a retry that does no new work. Never set this for a resolution whose dispatch uses
-     * a different command id than the one checked for a receipt.
+     * candidates by the project's current settings or the user's current favorites, or checking
+     * options against a model guessed again, would just refuse a retry that does no new work.
+     * Never set this for a resolution whose dispatch uses a different command id than the one
+     * checked for a receipt.
      */
-    readonly skipProjectEnablementFilter?: boolean;
+    readonly replaysAcceptedCommand?: boolean;
   }): Effect.Effect<ResolvedTarget, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       const requestedInstanceId = input.target?.providerInstanceId;
@@ -1244,7 +1245,7 @@ const make = Effect.gen(function* () {
       const favorites =
         requestedModel === undefined &&
         mayLeaveInheritedProvider &&
-        input.skipProjectEnablementFilter !== true
+        input.replaysAcceptedCommand !== true
           ? yield* loadDelegationFavorites
           : null;
       // An explicit model still resolves against the full catalog; favorites only
@@ -1276,21 +1277,24 @@ const make = Effect.gen(function* () {
         const inheritedCandidate = healthyCandidates.find(
           (candidate) => candidate.instanceId === input.parent.thread.modelSelection.instanceId,
         );
-        // Instances with a model to fall back to go first, so a favorite on a later
-        // instance is not refused because an earlier one has none.
+        const otherCandidates = healthyCandidates.filter(
+          (candidate) => candidate !== inheritedCandidate,
+        );
+        // Instances with a favorite go first, so a favorite on a later instance is
+        // not refused because an earlier one has none.
         const orderedCandidates = [
           ...(inheritedCandidate === undefined ? [] : [inheritedCandidate]),
-          ...healthyCandidates
-            .filter((candidate) => candidate !== inheritedCandidate)
-            .toSorted(
-              (left, right) =>
-                Number(defaultModel(right) !== undefined) -
-                Number(defaultModel(left) !== undefined),
-            ),
+          ...(favorites === null
+            ? otherCandidates
+            : otherCandidates.toSorted(
+                (left, right) =>
+                  Number(defaultModel(right) !== undefined) -
+                  Number(defaultModel(left) !== undefined),
+              )),
         ];
         for (const candidate of orderedCandidates) {
           const enabledForProject =
-            input.skipProjectEnablementFilter === true ||
+            input.replaysAcceptedCommand === true ||
             (yield* threadManagement.isProviderInstanceEnabledForProject({
               projectId: input.parent.thread.projectId,
               instanceId: candidate.instanceId,
@@ -1357,7 +1361,7 @@ const make = Effect.gen(function* () {
       }
 
       const requestedOptions = input.target?.options;
-      if (requestedOptions !== undefined) {
+      if (requestedOptions !== undefined && input.replaysAcceptedCommand !== true) {
         const descriptors = provider.models.find((candidate) => candidate.slug === model)
           ?.capabilities?.optionDescriptors;
         const invalid = invalidOptionSelections(requestedOptions, descriptors);
@@ -2043,7 +2047,7 @@ const make = Effect.gen(function* () {
           parent,
           target: input.target,
           providers,
-          skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
+          replaysAcceptedCommand: isRetryOfAcceptedDelegation,
         });
         const runtimeMode = yield* resolveRuntimeMode(
           parent.thread.runtimeMode,
