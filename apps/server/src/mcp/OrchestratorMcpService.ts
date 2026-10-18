@@ -1225,9 +1225,9 @@ const make = Effect.gen(function* () {
     /**
      * Set only when the command that will dispatch this target already has a receipt: that
      * dispatch can only replay the recorded result, never start anything new, so filtering
-     * candidates by the project's current settings would just refuse a retry that does no new
-     * work. Never set this for a resolution whose dispatch uses a different command id than the
-     * one checked for a receipt.
+     * candidates by the project's current settings or the user's current favorites would just
+     * refuse a retry that does no new work. Never set this for a resolution whose dispatch uses
+     * a different command id than the one checked for a receipt.
      */
     readonly skipProjectEnablementFilter?: boolean;
   }): Effect.Effect<ResolvedTarget, OrchestratorMcpFailure> =>
@@ -1235,6 +1235,27 @@ const make = Effect.gen(function* () {
       const requestedInstanceId = input.target?.providerInstanceId;
       const requestedDriver = input.target?.driverKind;
       const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+      const inheritedSelection = input.parent.thread.modelSelection;
+      const requestedModel = input.target?.model;
+      const mayLeaveInheritedProvider =
+        requestedDriver !== undefined ||
+        (requestedInstanceId !== undefined &&
+          requestedInstanceId !== inheritedSelection.instanceId);
+      const favorites =
+        requestedModel === undefined &&
+        mayLeaveInheritedProvider &&
+        input.skipProjectEnablementFilter !== true
+          ? yield* loadDelegationFavorites
+          : null;
+      // An explicit model still resolves against the full catalog; favorites only
+      // replace the guess made when the agent names no model.
+      const defaultModel = (candidate: ServerProvider) =>
+        candidate.instanceId === inheritedSelection.instanceId
+          ? inheritedSelection.model
+          : favorites === null
+            ? candidate.models[0]?.slug
+            : candidate.models.find((model) => favorites.get(candidate.instanceId)?.has(model.slug))
+                ?.slug;
       let instanceId = requestedInstanceId;
 
       if (instanceId === undefined && requestedDriver !== undefined) {
@@ -1255,9 +1276,17 @@ const make = Effect.gen(function* () {
         const inheritedCandidate = healthyCandidates.find(
           (candidate) => candidate.instanceId === input.parent.thread.modelSelection.instanceId,
         );
+        // Instances with a model to fall back to go first, so a favorite on a later
+        // instance is not refused because an earlier one has none.
         const orderedCandidates = [
           ...(inheritedCandidate === undefined ? [] : [inheritedCandidate]),
-          ...healthyCandidates.filter((candidate) => candidate !== inheritedCandidate),
+          ...healthyCandidates
+            .filter((candidate) => candidate !== inheritedCandidate)
+            .toSorted(
+              (left, right) =>
+                Number(defaultModel(right) !== undefined) -
+                Number(defaultModel(left) !== undefined),
+            ),
         ];
         for (const candidate of orderedCandidates) {
           const enabledForProject =
@@ -1306,22 +1335,7 @@ const make = Effect.gen(function* () {
         );
       }
 
-      const inheritedSelection = input.parent.thread.modelSelection;
-      const requestedModel = input.target?.model;
-      const favorites =
-        requestedModel === undefined && instanceId !== inheritedSelection.instanceId
-          ? yield* loadDelegationFavorites
-          : null;
-      const providerFavorites = favorites?.get(instanceId);
-      // An explicit model still resolves against the full catalog; favorites only
-      // replace the guess made when the agent names no model.
-      const model =
-        requestedModel ??
-        (instanceId === inheritedSelection.instanceId
-          ? inheritedSelection.model
-          : favorites === null
-            ? provider.models[0]?.slug
-            : provider.models.find((candidate) => providerFavorites?.has(candidate.slug))?.slug);
+      const model = requestedModel ?? defaultModel(provider);
       if (model === undefined) {
         return yield* failure(
           "model_unavailable",

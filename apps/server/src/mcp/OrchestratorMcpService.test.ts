@@ -13,6 +13,7 @@ import {
   RunId,
   ThreadId,
   type OrchestrationV2ThreadProjection,
+  type OrchestratorMcpTarget,
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -1143,9 +1144,13 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
-  const delegateToAntigravityWithoutModel = (
-    settings: Parameters<typeof ServerSettings.layerTest>[0],
-  ) =>
+  const secondAntigravityInstanceId = ProviderInstanceId.make("antigravity_second");
+
+  const delegateToAntigravityWithoutModel = (input: {
+    readonly settings: Parameters<typeof ServerSettings.layerTest>[0];
+    readonly target?: OrchestratorMcpTarget;
+    readonly hasReceipt?: boolean;
+  }) =>
     Effect.gen(function* () {
       const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
       const task = {
@@ -1177,7 +1182,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          hasReceipt: () => Effect.succeed(input.hasReceipt === true),
           assertProviderInstanceEnabled: () => Effect.void,
           isProviderInstanceEnabledForProject: () => Effect.succeed(true),
           getThreadRecords: (threadId) =>
@@ -1205,7 +1210,7 @@ describe("OrchestratorMcpService provider resolution", () => {
               } as never),
             ),
         }),
-        ServerSettings.layerTest(settings),
+        ServerSettings.layerTest(input.settings),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed([
             providerSnapshot({
@@ -1220,9 +1225,14 @@ describe("OrchestratorMcpService provider resolution", () => {
                 { slug: "ant-fav", name: "Favorite", isCustom: false, capabilities: null },
               ],
             },
+            providerSnapshot({
+              instanceId: secondAntigravityInstanceId,
+              driver: ProviderDriverKind.make("antigravity"),
+              model: "ant-second",
+            }),
           ]),
         }),
-        adapterRegistryLayer([codexInstanceId, antigravityInstanceId]),
+        adapterRegistryLayer([codexInstanceId, antigravityInstanceId, secondAntigravityInstanceId]),
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -1232,7 +1242,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         const outcome = yield* service
           .delegateTask(scope, {
             task: "Summarize the diff.",
-            target: { providerInstanceId: antigravityInstanceId },
+            target: input.target ?? { providerInstanceId: antigravityInstanceId },
             mode: "async",
             clientRequestId: "delegate-without-model-1",
           })
@@ -1240,8 +1250,9 @@ describe("OrchestratorMcpService provider resolution", () => {
         const commands = yield* Ref.get(dispatched);
         return {
           failureCode: outcome._tag === "Failure" ? outcome.failure.code : null,
-          models: commands.map(
-            (command) => (command as { modelSelection: { model: string } }).modelSelection.model,
+          selections: commands.map(
+            (command) =>
+              (command as { modelSelection: { instanceId: string; model: string } }).modelSelection,
           ),
         };
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
@@ -1250,20 +1261,56 @@ describe("OrchestratorMcpService provider resolution", () => {
   it.effect("delegates without a model to the target provider's first favorite", () =>
     Effect.gen(function* () {
       const outcome = yield* delegateToAntigravityWithoutModel({
-        delegationFavoritesOnly: true,
-        favorites: [{ provider: antigravityInstanceId, model: "ant-fav" }],
+        settings: {
+          delegationFavoritesOnly: true,
+          favorites: [{ provider: antigravityInstanceId, model: "ant-fav" }],
+        },
       });
-      assert.deepEqual(outcome, { failureCode: null, models: ["ant-fav"] });
+      assert.deepEqual(outcome, {
+        failureCode: null,
+        selections: [{ instanceId: antigravityInstanceId, model: "ant-fav" }],
+      });
     }),
   );
 
   it.effect("refuses to guess a model for a provider without favorites", () =>
     Effect.gen(function* () {
       const outcome = yield* delegateToAntigravityWithoutModel({
-        delegationFavoritesOnly: true,
-        favorites: [{ provider: codexInstanceId, model: "gpt-5.4" }],
+        settings: {
+          delegationFavoritesOnly: true,
+          favorites: [{ provider: codexInstanceId, model: "gpt-5.4" }],
+        },
       });
-      assert.deepEqual(outcome, { failureCode: "model_unavailable", models: [] });
+      assert.deepEqual(outcome, { failureCode: "model_unavailable", selections: [] });
+    }),
+  );
+
+  it.effect("replays an accepted delegation after its provider lost its favorites", () =>
+    Effect.gen(function* () {
+      const outcome = yield* delegateToAntigravityWithoutModel({
+        settings: { delegationFavoritesOnly: true, favorites: [] },
+        hasReceipt: true,
+      });
+      assert.deepEqual(outcome, {
+        failureCode: null,
+        selections: [{ instanceId: antigravityInstanceId, model: "ant-model" }],
+      });
+    }),
+  );
+
+  it.effect("driver-only delegation picks the instance that has a favorite", () =>
+    Effect.gen(function* () {
+      const outcome = yield* delegateToAntigravityWithoutModel({
+        settings: {
+          delegationFavoritesOnly: true,
+          favorites: [{ provider: secondAntigravityInstanceId, model: "ant-second" }],
+        },
+        target: { driverKind: ProviderDriverKind.make("antigravity") },
+      });
+      assert.deepEqual(outcome, {
+        failureCode: null,
+        selections: [{ instanceId: secondAntigravityInstanceId, model: "ant-second" }],
+      });
     }),
   );
 

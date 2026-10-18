@@ -1111,8 +1111,9 @@ export function EnvironmentProviderSettings({
           {...searchableSetting("delegation-favorites-only")}
           description="Agents choosing a model for subagents or new threads only see your favorite models. Providers without favorites are left out."
           resetAction={
+            canWriteSettings &&
             settings.delegationFavoritesOnly !==
-            DEFAULT_UNIFIED_SETTINGS.delegationFavoritesOnly ? (
+              DEFAULT_UNIFIED_SETTINGS.delegationFavoritesOnly ? (
               <SettingResetButton
                 label="favorite models only for agents"
                 onClick={() =>

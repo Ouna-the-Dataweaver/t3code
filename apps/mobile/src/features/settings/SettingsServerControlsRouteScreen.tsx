@@ -13,12 +13,15 @@ import {
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   type ProjectScopedServerSettingKey,
 } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/reactivity";
 import { useRef, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { RUNTIME_MODE_CHOICES } from "../threads/thread-settings-options";
 import { serverEnvironment } from "../../state/server";
+import { mobilePreferencesAtom } from "../../state/preferences";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsScreen } from "./components/SettingsScreen";
 import {
@@ -172,6 +175,10 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
   const isMixed = (key: keyof ServerSettings) =>
     reference === null ||
     displayTargets.some((entry) => entry.settings[key] !== reference.settings[key]);
+  const preferences = useAtomValue(mobilePreferencesAtom);
+  const legacyFavorites = AsyncResult.isSuccess(preferences)
+    ? (preferences.value.modelFavorites ?? [])
+    : [];
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
     label: "environment settings update",
     reportFailure: true,
@@ -452,7 +459,16 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       }
                       value={uniform("delegationFavoritesOnly")}
                       disabled={disabledFor("delegationFavoritesOnly")}
-                      onValueChange={(value) => write({ delegationFavoritesOnly: value })}
+                      // The server applies the migration only where favorites are still
+                      // unset, so favorites saved only on this device take effect too.
+                      onValueChange={(value) =>
+                        write({
+                          delegationFavoritesOnly: value,
+                          ...(legacyFavorites.length > 0
+                            ? { migrateModelPreferences: { favorites: legacyFavorites } }
+                            : {}),
+                        })
+                      }
                     />
                   </SettingsSection>
                 </>
