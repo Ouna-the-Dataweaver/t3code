@@ -1129,6 +1129,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     readonly target?: OrchestratorMcpTarget;
     readonly hasReceipt?: boolean;
     readonly antigravityModels?: ServerProvider["models"];
+    readonly via?: "createThreads";
   }) =>
     Effect.gen(function* () {
       const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
@@ -1168,7 +1169,13 @@ describe("OrchestratorMcpService provider resolution", () => {
             Effect.succeed(
               threadId === parentThreadId
                 ? parentProjection(delegated ? [task] : [])
-                : childProjection,
+                : ({
+                    ...childProjection,
+                    thread: {
+                      ...childProjection.thread,
+                      modelSelection: { instanceId: antigravityInstanceId, model: "ant-fav" },
+                    },
+                  } as unknown as OrchestrationV2ThreadProjection),
             ),
           dispatch: (command) =>
             Ref.update(dispatched, (commands) => [...commands, command]).pipe(
@@ -1218,20 +1225,29 @@ describe("OrchestratorMcpService provider resolution", () => {
       );
       return yield* Effect.gen(function* () {
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        const outcome = yield* service
-          .delegateTask(scope, {
-            task: "Summarize the diff.",
-            target: input.target ?? { providerInstanceId: antigravityInstanceId },
-            mode: "async",
-            clientRequestId: "delegate-without-model-1",
-          })
-          .pipe(Effect.result);
+        const target = input.target ?? { providerInstanceId: antigravityInstanceId };
+        const outcome = yield* input.via === "createThreads"
+          ? service
+              .createThreads(scope, {
+                threads: [{ prompt: "Summarize the diff.", target }],
+                clientRequestId: "create-without-model-1",
+              })
+              .pipe(Effect.result)
+          : service
+              .delegateTask(scope, {
+                task: "Summarize the diff.",
+                target,
+                mode: "async",
+                clientRequestId: "delegate-without-model-1",
+              })
+              .pipe(Effect.result);
         const commands = yield* Ref.get(dispatched);
         return {
           failureCode: outcome._tag === "Failure" ? outcome.failure.code : null,
-          selections: commands.map(
-            (command) => (command as { modelSelection: ModelSelection }).modelSelection,
-          ),
+          selections: commands.flatMap((command) => {
+            const selection = (command as { modelSelection?: ModelSelection }).modelSelection;
+            return selection === undefined ? [] : [selection];
+          }),
         };
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
     });
@@ -1343,6 +1359,22 @@ describe("OrchestratorMcpService provider resolution", () => {
             model: "ant-model",
             options: [{ id: "reasoningEffort", value: "xhigh" }],
           },
+        ],
+      },
+    },
+    {
+      // The thread exists with the favorite it got, so its prompt follows that model.
+      name: "replays created threads that current favorites would refuse",
+      input: {
+        settings: { delegationFavoritesOnly: true, favorites: [] },
+        hasReceipt: true,
+        via: "createThreads",
+      },
+      outcome: {
+        failureCode: null,
+        selections: [
+          { instanceId: antigravityInstanceId, model: "ant-fav" },
+          { instanceId: antigravityInstanceId, model: "ant-fav" },
         ],
       },
     },

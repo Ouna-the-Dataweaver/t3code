@@ -2364,11 +2364,32 @@ const make = Effect.gen(function* () {
           input.threads,
           (request, index) =>
             Effect.gen(function* () {
-              const target = yield* resolveTargetRechecking({
+              const threadId = stableThreadId({
+                scope,
+                requestKey: key,
+                index,
+              });
+              const createCommandId = stableCommandId({
+                scope,
+                requestKey: key,
+                operation: "create-thread",
+                index,
+              });
+              const replaysCreate = yield* threadManagement.hasReceipt(createCommandId);
+              const resolved = yield* resolveTargetRechecking({
                 parent,
                 target: request.target,
                 providers,
+                replaysAcceptedCommand: replaysCreate,
               });
+              // A replayed thread keeps the model it was created with, so a prompt the
+              // first attempt never sent starts there rather than on a model guessed again.
+              const target = replaysCreate
+                ? {
+                    ...resolved,
+                    modelSelection: (yield* loadProjection(threadId)).thread.modelSelection,
+                  }
+                : resolved;
               const runtimeMode = yield* resolveRuntimeMode(
                 parent.thread.runtimeMode,
                 request.runtimeMode,
@@ -2378,16 +2399,7 @@ const make = Effect.gen(function* () {
                 parent.thread.interactionMode,
                 request.interactionMode,
               );
-              const threadId = stableThreadId({
-                scope,
-                requestKey: key,
-                index,
-              });
-              yield* assertTargetEnabledForProject(
-                parent,
-                stableCommandId({ scope, requestKey: key, operation: "create-thread", index }),
-                target,
-              );
+              yield* assertTargetEnabledForProject(parent, createCommandId, target);
               const title = threadTitle({
                 parentTitle: parent.thread.title,
                 prompt: request.prompt,
@@ -2399,12 +2411,7 @@ const make = Effect.gen(function* () {
                   type: "thread.create",
                   createdBy: "agent",
                   creationSource: "mcp",
-                  commandId: stableCommandId({
-                    scope,
-                    requestKey: key,
-                    operation: "create-thread",
-                    index,
-                  }),
+                  commandId: createCommandId,
                   threadId,
                   projectId: parent.thread.projectId,
                   title,
