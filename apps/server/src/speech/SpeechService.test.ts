@@ -17,6 +17,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { listNativeSpeechGpuDevices } from "./native.ts";
 import * as SpeechModelStore from "./SpeechModelStore.ts";
 import * as SpeechService from "./SpeechService.ts";
+import * as ExternalSpeechApi from "./ExternalSpeechApi.ts";
 import { SILERO_VAD } from "./silero.ts";
 
 const native = vi.hoisted(() => ({
@@ -107,6 +108,7 @@ const store = Layer.succeed(
   }),
 );
 const layer = SpeechService.layer.pipe(
+  Layer.provide(Layer.mock(ExternalSpeechApi.ExternalSpeechApi)({})),
   Layer.provide(store),
   Layer.provideMerge(ServerSettings.layerTest({ speechModelId: "test-model" })),
   Layer.provide(NodeServices.layer),
@@ -132,6 +134,37 @@ it("decodes a pooled Node Buffer without reading adjacent bytes", () => {
   Buffer.from(new Float32Array([0.25]).buffer).copy(pool, 20);
   expect([...SpeechService.decodeSpeechPcm(pool.subarray(20, 24))]).toEqual([0.25]);
 });
+
+it.effect("uses the external endpoint without preparing or loading a managed model", () =>
+  Effect.gen(function* () {
+    const service = yield* SpeechService.SpeechService;
+    const status = yield* service.status;
+    expect(status).toMatchObject({ supported: true, source: "external", supportsStreaming: false });
+    yield* service.prepareModel;
+    expect(yield* service.transcribe(pcm(), DEFAULT_SPEECH_TRANSCRIPTION_OPTIONS)).toBe("hello");
+    expect(loadNative).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
+  }).pipe(
+    Effect.provide(
+      SpeechService.layer.pipe(
+        Layer.provide(store),
+        Layer.provide(NodeServices.layer),
+        Layer.provide(
+          ServerSettings.layerTest({
+            speechModelSource: "external",
+            speechExternalEndpoint: "http://127.0.0.1:8999/v1",
+            speechExternalModel: "parakeet",
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ExternalSpeechApi.ExternalSpeechApi)({
+            transcribe: () => Effect.succeed("hello"),
+          }),
+        ),
+      ),
+    ),
+  ),
+);
 
 it("rejects empty, misaligned, non-finite, and oversized PCM as invalid audio", () => {
   for (const input of [

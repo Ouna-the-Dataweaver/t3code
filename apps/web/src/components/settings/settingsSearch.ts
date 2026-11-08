@@ -576,6 +576,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "speech-model-management",
+    title: "Speech model management and endpoint",
+    to: "/settings/voice",
+    searchTerms: [
+      "stt user managed self managed external local server openai compatible base url endpoint api key",
+    ],
+  },
+  {
     id: "speech-hardware",
     title: "Transcription hardware and model unloading",
     to: "/settings/voice",

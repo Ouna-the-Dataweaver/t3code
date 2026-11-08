@@ -104,6 +104,7 @@ import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import { MicrophoneTest } from "./MicrophoneTest";
 import { CloudVoiceConfiguration } from "./CloudVoiceConfiguration";
+import { ExternalSpeechSettings } from "./ExternalSpeechSettings";
 import { LanguageRow, ModelBenchmarks, orderSpeechLanguages } from "./SpeechModelComparison";
 import { languageLabel, SpeechLanguageSelect } from "./SpeechLanguageSelect";
 import { filterSpeechModels, type SpeechModelSort } from "./speechModelBrowser";
@@ -648,6 +649,7 @@ function useVoiceModels(prepared: PreparedConnection | null) {
   return {
     models,
     status,
+    refresh,
     run,
     controlsDisabled: busy || downloading || !canManage,
     canCancel: canManage && !busy,
@@ -665,7 +667,7 @@ function AdvancedSpeechSettings({
   catalog: VoiceModels;
 }) {
   const { run, controlsDisabled, status } = catalog;
-  if (!status?.supported) return null;
+  if (!status?.supported || status.source === "external") return null;
   const supported = status;
   return (
     <AdvancedSettings targetIds={[searchableSetting("speech-hardware").id]}>
@@ -1178,13 +1180,24 @@ export function VoiceSettingsPanel() {
       searchTargetFallbacks={{
         "speech-language":
           model || destination.cloudProvider ? undefined : "voice-transcription-destination",
-        "speech-models": prepared ? undefined : "voice-transcription-destination",
-        "speech-hardware": prepared && model ? undefined : "voice-transcription-destination",
-        "transcription-test": !prepared
+        "speech-models": !prepared
           ? "voice-transcription-destination"
-          : !model || model.state === "missing-model"
-            ? "speech-models"
+          : model?.source === "external"
+            ? "speech-model-management"
             : undefined,
+        "speech-model-management": prepared ? undefined : "voice-transcription-destination",
+        "speech-hardware":
+          model?.source === "external"
+            ? "speech-model-management"
+            : prepared && model
+              ? undefined
+              : "voice-transcription-destination",
+        "transcription-test":
+          !prepared || model?.source === "external"
+            ? "voice-transcription-destination"
+            : !model || model.state === "missing-model"
+              ? "speech-models"
+              : undefined,
         "speech-post-processing-model":
           cleanupEnabled && settingsScope ? undefined : "speech-post-processing",
         "speech-correction-word": cleanupEnabled ? undefined : "speech-post-processing",
@@ -1421,6 +1434,13 @@ export function VoiceSettingsPanel() {
             close={() => setPendingCloud(null)}
           />
         )}
+        {prepared && destination.environmentId && (
+          <ExternalSpeechSettings
+            key={destination.environmentId}
+            environmentId={destination.environmentId}
+            onSaved={() => catalog.refresh(prepared, "foreground")}
+          />
+        )}
         {(model || destination.cloudProvider) && (
           <SettingsRow
             {...searchableSetting("speech-language")}
@@ -1434,7 +1454,11 @@ export function VoiceSettingsPanel() {
             }
             control={
               <SpeechLanguageSelect
-                model={destination.cloudProvider ? cloudSpeechLanguages : model}
+                model={
+                  destination.cloudProvider || model?.source === "external"
+                    ? cloudSpeechLanguages
+                    : model
+                }
               />
             }
           />
@@ -1454,7 +1478,7 @@ export function VoiceSettingsPanel() {
             }
           />
         ) : null}
-        {prepared ? (
+        {prepared && chosenEnvironment?.serverConfig?.settings.speechModelSource !== "external" ? (
           <SpeechModelBrowser
             key={prepared.environmentId}
             prepared={prepared}
@@ -1473,14 +1497,16 @@ export function VoiceSettingsPanel() {
           {...searchableSetting("speech-silence-filtering")}
           title="Silence filtering"
           description={
-            destination.cloudProvider === "openai"
-              ? "OpenAI handles silence automatically."
-              : "Skip silence and other non-speech audio before transcription, keeping a short buffer so words aren’t cut off."
+            model?.source === "external"
+              ? "Your speech server handles silence filtering."
+              : destination.cloudProvider === "openai"
+                ? "OpenAI handles silence automatically."
+                : "Skip silence and other non-speech audio before transcription, keeping a short buffer so words aren’t cut off."
           }
           control={
             <Switch
               aria-label="Silence filtering"
-              disabled={destination.cloudProvider === "openai"}
+              disabled={destination.cloudProvider === "openai" || model?.source === "external"}
               checked={settings.speechSilenceFiltering}
               onCheckedChange={(checked) =>
                 void updateClientSettings({ speechSilenceFiltering: checked })

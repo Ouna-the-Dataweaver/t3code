@@ -89,6 +89,14 @@ are down, and **Toggle** always needs a second press. Change the chord itself in
 
 ## Improve recognition
 
+To use an existing speech server, choose an environment under **Transcribe with**,
+then set **Model management → User managed**. Enter its OpenAI-compatible API base
+URL, model ID, and an API key if required, then save the endpoint. Include `/v1`
+when your server requires it. `localhost` refers to the selected environment's
+machine. T3 Code sends finished recordings to that server without downloading or
+loading a local model. Live partial transcripts and translation are unavailable
+in this mode. Switch back to **Managed by T3 Code** to use downloaded models.
+
 - **Language** picks what you speak. **Auto** lets a multilingual model detect
   it. Models that translate offer **Translate to English**.
 - **Dictionary** holds names and terms the model should get right. Add an alias

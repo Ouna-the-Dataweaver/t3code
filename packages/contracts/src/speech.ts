@@ -172,6 +172,7 @@ export const EnvironmentSpeechStatus = Schema.Union([
   }),
   Schema.Struct({
     supported: Schema.Literal(true),
+    source: Schema.optionalKey(Schema.Literals(["managed", "external"])),
     state: EnvironmentSpeechState,
     modelId: SpeechModelId,
     model: Schema.String,

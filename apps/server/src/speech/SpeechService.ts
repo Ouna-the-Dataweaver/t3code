@@ -36,6 +36,8 @@ import { nativeSpeechLanguage } from "./nativeLanguage.ts";
 import { SILERO_VAD } from "./silero.ts";
 import { isSpeechPlatformSupported } from "./platform.ts";
 import * as SpeechModelStore from "./SpeechModelStore.ts";
+import * as ExternalSpeechApi from "./ExternalSpeechApi.ts";
+import { applySpeechAliases } from "./customWords.ts";
 
 const SAMPLE_RATE = 16_000;
 const MAX_SPEECH_DURATION_SECONDS = 5 * 60;
@@ -168,6 +170,7 @@ const make = Effect.gen(function* () {
   const platform = yield* HostProcess.Platform;
   const architecture = yield* HostProcess.Architecture;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const api = yield* ExternalSpeechApi.ExternalSpeechApi;
   const store = yield* SpeechModelStore.SpeechModelStore;
   const scope = yield* Effect.scope;
   const clock = yield* Clock.Clock;
@@ -448,7 +451,32 @@ const make = Effect.gen(function* () {
 
   const currentStatus = Effect.fn("SpeechService.currentStatus")(function* (
     settings: SettingsSnapshot,
-  ): Effect.fn.Return<EnvironmentSpeechStatus> {
+  ): Effect.fn.Return<EnvironmentSpeechStatus, SpeechError> {
+    if (settings.speechModelSource === "external") {
+      if (!operationBusy() && !activeTranscriptions && !loading)
+        yield* attempt("model unload", disposeModel);
+      if (!settings.speechExternalEndpoint || !settings.speechExternalModel) {
+        return {
+          supported: false,
+          reason: "Configure the user-managed speech endpoint and model in Settings → Voice.",
+        };
+      }
+      return {
+        supported: true,
+        source: "external",
+        state: activeTranscriptions > 0 ? "transcribing" : "ready",
+        modelId: settings.speechExternalModel || "external",
+        model: settings.speechExternalModel || "User-managed endpoint",
+        size: 0,
+        supportsStreaming: false,
+        supportsBufferedStreaming: false,
+        supportsTranslation: false,
+        supportsLanguageDetection: true,
+        acceleration: "auto",
+        modelUnloadTimeout: "never",
+        gpuDevices: [],
+      };
+    }
     if (unsupportedReason) return { supported: false, reason: unsupportedReason };
     const definition = selectedModel(settings);
     const ready = yield* store.isReady(definition);
@@ -538,28 +566,34 @@ const make = Effect.gen(function* () {
 
   const prepareModel = readSettings("model preparation").pipe(
     Effect.flatMap((settings) =>
-      exclusive(
-        "model preparation",
-        requireSupported.pipe(
-          Effect.andThen(installedModelPath(selectedModel(settings))),
-          Effect.flatMap((modelPath) =>
-            attempt("model preparation", (signal) =>
-              loadModel(
-                modelPath,
-                selectedModel(settings),
-                AbortSignal.any([signal, lifetime.signal]),
-                settings.speechAcceleration,
+      settings.speechModelSource === "external"
+        ? exclusive("model preparation", attempt("model preparation", disposeModel)).pipe(
+            Effect.asVoid,
+          )
+        : exclusive(
+            "model preparation",
+            requireSupported.pipe(
+              Effect.andThen(installedModelPath(selectedModel(settings))),
+              Effect.flatMap((modelPath) =>
+                attempt("model preparation", (signal) =>
+                  loadModel(
+                    modelPath,
+                    selectedModel(settings),
+                    AbortSignal.any([signal, lifetime.signal]),
+                    settings.speechAcceleration,
+                  ),
+                ).pipe(
+                  Effect.timeout("2 minutes"),
+                  Effect.catchTags({
+                    TimeoutError: (cause) =>
+                      Effect.fail(
+                        new SpeechOperationError({ operation: "model preparation", cause }),
+                      ),
+                  }),
+                ),
               ),
-            ).pipe(
-              Effect.timeout("2 minutes"),
-              Effect.catchTags({
-                TimeoutError: (cause) =>
-                  Effect.fail(new SpeechOperationError({ operation: "model preparation", cause })),
-              }),
             ),
           ),
-        ),
-      ),
     ),
   );
 
@@ -575,6 +609,31 @@ const make = Effect.gen(function* () {
   const transcribe: SpeechService["Service"]["transcribe"] = Effect.fn("SpeechService.transcribe")(
     function* (pcmBytes, options) {
       const settings = yield* readSettings("transcription");
+      if (settings.speechModelSource === "external") {
+        const samples = yield* Effect.try({
+          try: () => decodeSpeechPcm(pcmBytes),
+          catch: (cause) => speechError("transcription", cause),
+        });
+        return yield* exclusive(
+          "transcription",
+          Effect.gen(function* () {
+            yield* attempt("model preparation", disposeModel);
+            const text = yield* api
+              .transcribe(samples, options)
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new SpeechOperationError({ operation: "external transcription", cause }),
+                ),
+              );
+            return finalizeTranscript(
+              applySpeechAliases(text, options.speechCustomWords),
+              options,
+              options.speechLanguage === "auto" ? undefined : options.speechLanguage,
+            );
+          }),
+        );
+      }
       return yield* exclusive(
         "transcription",
         Effect.gen(function* () {
@@ -680,6 +739,13 @@ const make = Effect.gen(function* () {
   // Stream setup shares the public startStream span.
   const openStream = Effect.fnUntraced(function* (options: SpeechTranscriptionOptions) {
     const operation = "streaming transcription";
+    const snapshot = yield* readSettings(operation);
+    if (snapshot.speechModelSource === "external") {
+      return yield* new SpeechOperationError({
+        operation,
+        cause: "Use completed recordings with an external endpoint.",
+      });
+    }
     yield* requireSupported;
     const released = Promise.withResolvers<void>();
     // @effect-diagnostics-next-line abortControllerInEffect:off - Stream cancellation must abort native work independently of the caller fiber.
@@ -892,7 +958,12 @@ const make = Effect.gen(function* () {
           await disposeModel();
         }),
       ).pipe(
-        Effect.andThen(writeSettings("model selection", { speechModelId: modelId })),
+        Effect.andThen(
+          writeSettings("model selection", {
+            speechModelId: modelId,
+            speechModelSource: "managed",
+          }),
+        ),
         Effect.andThen(modelsEffect),
       ),
     ),

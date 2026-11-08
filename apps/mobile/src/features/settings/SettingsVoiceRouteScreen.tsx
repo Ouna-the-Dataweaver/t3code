@@ -30,6 +30,7 @@ import {
   hasEnvironmentVoiceCapture,
 } from "../voice-input/voiceDestination";
 import { VoiceModelSection } from "./VoiceModelSection";
+import { ExternalSpeechSection } from "./ExternalSpeechSection";
 import { CloudVoiceSection } from "./CloudVoiceSection";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
@@ -280,6 +281,14 @@ export function SettingsVoiceRouteScreen() {
               />
             ))}
         {grantEnvironment && grant?.destination.kind === "environment" ? (
+          <ExternalSpeechSection
+            key={grantEnvironment.environmentId}
+            environment={grantEnvironment}
+          />
+        ) : null}
+        {grantEnvironment &&
+        grant?.destination.kind === "environment" &&
+        grantEnvironment.serverConfig?.settings.speechModelSource !== "external" ? (
           <VoiceModelSection
             environmentId={grantEnvironment.environmentId}
             label={grantEnvironment.label}

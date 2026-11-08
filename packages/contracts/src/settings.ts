@@ -1247,6 +1247,29 @@ export const CloudSpeechCredentials = Schema.Struct({
   openrouter: CloudSpeechCredential,
 });
 
+export const VoiceApiCredentials = Schema.Struct({
+  external: CloudSpeechCredential,
+});
+
+const SpeechExternalEndpoint = TrimmedString.check(
+  Schema.isMaxLength(2048),
+  Schema.makeFilter((value) => {
+    if (!value) return true;
+    try {
+      const url = new URL(value);
+      return (
+        ["http:", "https:"].includes(url.protocol) &&
+        !url.username &&
+        !url.password &&
+        !url.search &&
+        !url.hash
+      );
+    } catch {
+      return false;
+    }
+  }),
+);
+
 export const ServerSettings = Schema.Struct({
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -1277,6 +1300,18 @@ export const ServerSettings = Schema.Struct({
   ),
   speechModelId: Schema.String.pipe(
     Schema.withDecodingDefault(Effect.succeed("handy-computer/parakeet-unified-en-0.6b-gguf")),
+  ),
+  speechModelSource: Schema.Literals(["managed", "external"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("managed")),
+  ),
+  speechExternalEndpoint: SpeechExternalEndpoint.pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
+  ),
+  speechExternalModel: TrimmedString.check(Schema.isMaxLength(200)).pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
+  ),
+  voiceApiCredentials: VoiceApiCredentials.pipe(
+    Schema.withDecodingDefault(Effect.succeed({ external: "" })),
   ),
   speechAcceleration: SpeechAcceleration.pipe(Schema.withDecodingDefault(Effect.succeed("auto"))),
   speechModelUnloadTimeout: SpeechModelUnloadTimeout.pipe(
@@ -1699,6 +1734,12 @@ export const ServerSettingsPatch = Schema.Struct({
     }),
   ),
   speechModelId: Schema.optionalKey(Schema.String),
+  speechModelSource: Schema.optionalKey(Schema.Literals(["managed", "external"])),
+  speechExternalEndpoint: Schema.optionalKey(SpeechExternalEndpoint),
+  speechExternalModel: Schema.optionalKey(TrimmedString.check(Schema.isMaxLength(200))),
+  voiceApiCredentials: Schema.optionalKey(
+    Schema.Struct({ external: Schema.optionalKey(SettingsSecretValue) }),
+  ),
   speechAcceleration: Schema.optionalKey(SpeechAcceleration),
   speechModelUnloadTimeout: Schema.optionalKey(SpeechModelUnloadTimeout),
   speechProjectCustomWords: Schema.optionalKey(SpeechCustomWords),
